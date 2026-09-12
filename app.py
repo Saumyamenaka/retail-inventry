@@ -78,7 +78,6 @@ if not st.session_state.authenticated:
                     st.session_state.user_info = users[login_user]
                     st.session_state.is_admin = False
                     
-                    # Load existing stock to session state
                     stock_db = load_data(STOCK_DB_FILE)
                     u_email = users[login_user]['email']
                     if u_email in stock_db:
@@ -170,7 +169,6 @@ else:
             
     st.divider()
 
-    # Get active master stock from Session State first, then fallback to DB
     if user_key in st.session_state.master_inventory:
         master_df = pd.DataFrame(st.session_state.master_inventory[user_key])
     else:
@@ -180,6 +178,31 @@ else:
             master_df = pd.DataFrame(stock_db[user_key])
         else:
             master_df = None
+
+    # --- TOP EXECUTIVE SUMMARY DASHBOARD ---
+    if master_df is not None and not master_df.empty:
+        total_units = int(master_df['Stock_Qty'].sum())
+        total_val = int((master_df['Stock_Qty'] * master_df['Price_LKR']).sum())
+        dead_df = master_df[master_df['Days_In_Rack'] > 30]
+        dead_units = int(dead_df['Stock_Qty'].sum())
+        recoverable_val = int((dead_df['Stock_Qty'] * dead_df['Price_LKR'] * 0.8).sum())
+        
+        st.subheader("📊 Executive Performance Dashboard")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("📦 Total Stock Units", f"{total_units:,}")
+        m2.metric("💎 Total Stock Valuation", f"LKR {total_val:,}")
+        m3.metric("🚨 Current Dead Stock Units", f"{dead_units:,}")
+        m4.metric("💰 Recoverable Cash", f"LKR {recoverable_val:,}")
+        
+        # Monthly Summary Export Option
+        summary_csv = master_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Download Monthly Inventory & Performance Summary (CSV)",
+            data=summary_csv,
+            file_name=f"{user['shop_name']}_Monthly_Summary.csv",
+            mime="text/csv"
+        )
+        st.divider()
 
     tab1, tab2, tab3 = st.tabs(["📦 Baseline Stock Setup", "🛒 Daily Sales & Cash Recovery", "🚚 Restock & Alerts"])
 
@@ -239,16 +262,11 @@ else:
                 save_data(stock_db, STOCK_DB_FILE)
                 
                 st.success("✅ Stock Deducted & Database Updated!")
+                st.rerun()
 
             dead_stock = current_df[current_df['Days_In_Rack'] > 30].copy()
             dead_stock['Discount_Price'] = (dead_stock['Price_LKR'] * 0.8).astype(int)
             dead_stock['Recoverable_Cash'] = dead_stock['Discount_Price'] * dead_stock['Stock_Qty']
-            
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Total Stock Units", f"{current_df['Stock_Qty'].sum():,}")
-            col2.metric("Total Valuation", f"LKR {(current_df['Stock_Qty'] * current_df['Price_LKR']).sum():,}")
-            col3.metric("🚨 Dead Stock Units", f"{dead_stock['Stock_Qty'].sum():,}")
-            col4.metric("💰 Recoverable Cash", f"LKR {dead_stock['Recoverable_Cash'].sum():,}")
             
             st.divider()
             st.subheader("🎯 Size-Targeted WhatsApp Clearance Offers")
@@ -300,3 +318,4 @@ else:
                 save_data(stock_db, STOCK_DB_FILE)
                 
                 st.success("🎉 Restock Updated & Saved!")
+                st.rerun()
