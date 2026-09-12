@@ -61,7 +61,7 @@ if not st.session_state.authenticated:
                         "email": email,
                         "phone": phone,
                         "password": password,
-                        "uploaded_dates": []
+                        "uploaded_dates": [] # Track uploaded sales dates
                     }
                     save_data(users, USER_DB_FILE)
                     st.success("🎉 Registration Successful! Switch to 'Login' above.")
@@ -203,7 +203,7 @@ else:
         )
         st.divider()
 
-    tab1, tab2, tab3 = st.tabs(["📦 Baseline Stock Setup", "🛒 Daily Sales & Cash Recovery", "🚚 Restock & Live Inventory Editor"])
+    tab1, tab2, tab3 = st.tabs(["📦 Baseline Stock Setup", "🛒 Daily Sales & Cash Recovery", "🚚 Restock & Live Editor"])
 
     # TAB 1: MASTER SETUP
     with tab1:
@@ -285,37 +285,25 @@ else:
 
             dead_stock = current_df[current_df['Days_In_Rack'] > 30].copy()
             dead_stock['Discount_Price'] = (dead_stock['Price_LKR'] * 0.8).astype(int)
+            dead_stock['Recoverable_Cash'] = dead_stock['Discount_Price'] * dead_stock['Stock_Qty']
             
             st.divider()
             st.subheader("🎯 Size-Targeted WhatsApp Clearance Offers")
-            
-            if not dead_stock.empty:
-                select_all_dead = st.checkbox("☑️ Select All Dead Stock Items for Bulk WhatsApp Broadcast")
-                bulk_items_text = f"🌸 SPECIAL CLEARANCE SALE at {user['shop_name']}! Check items below:\n"
-                
-                for idx, row in dead_stock.iterrows():
-                    if row['Stock_Qty'] > 0:
-                        with st.expander(f"⚠️ {row['Item_Name']} - [Size: {row['Size']}] ({row['Stock_Qty']} units | Stuck: {row['Days_In_Rack']} days)"):
-                            st.write(f"**Original Price:** LKR {row['Price_LKR']:,} | **Offer Price:** LKR {row['Discount_Price']:,}")
-                            offer_text = f"🌸 CLEARANCE OFFER! {user['shop_name']} offers {row['Item_Name']} (Size: {row['Size']}) for LKR {row['Discount_Price']:,}! Reply YES to reserve."
-                            encoded = urllib.parse.quote(offer_text)
-                            st.markdown(f"[📲 Launch Individual WhatsApp Offer](https://wa.me/?text={encoded})", unsafe_allow_html=True)
-                        
-                        if select_all_dead:
-                            bulk_items_text += f"- {row['Item_Name']} ({row['Size']}) Now LKR {row['Discount_Price']:,}\n"
-                
-                if select_all_dead:
-                    encoded_bulk = urllib.parse.quote(bulk_items_text)
-                    st.markdown(f"### 🚀 [Click Here to Send Bulk WhatsApp Broadcast for All Selected Items](https://wa.me/?text={encoded_bulk})")
+            for idx, row in dead_stock.iterrows():
+                if row['Stock_Qty'] > 0:
+                    with st.expander(f"⚠️ {row['Item_Name']} - [Size: {row['Size']}] ({row['Stock_Qty']} units | Stuck: {row['Days_In_Rack']} days)"):
+                        st.write(f"**Original Price:** LKR {row['Price_LKR']:,} | **Offer Price:** LKR {row['Discount_Price']:,}")
+                        offer_text = f"🌸 CLEARANCE OFFER! {user['shop_name']} offers {row['Item_Name']} (Size: {row['Size']}) for LKR {row['Discount_Price']:,}! Reply YES to reserve."
+                        encoded = urllib.parse.quote(offer_text)
+                        st.markdown(f"[📲 Launch WhatsApp Campaign](https://wa.me/?text={encoded})", unsafe_allow_html=True)
 
-    # TAB 3: RESTOCK & LIVE INVENTORY EDITOR
+    # TAB 3: RESTOCK & LIVE EDITOR
     with tab3:
-        st.header("3. Smart Restock, Alerts & Live Inventory Editor")
+        st.header("3. Live Inventory Editor, Alerts & Restock")
         if master_df is not None and not master_df.empty:
             if 'Min_Limit' not in master_df.columns:
                 master_df['Min_Limit'] = 5
                 
-            # --- LIVE EDITING TABLE ---
             st.subheader("✏️ Live Inventory Editor (Click any cell to edit Stock, Min Limit, or Prices directly)")
             edited_df = st.data_editor(master_df, num_rows="dynamic", use_container_width=True, key="live_stock_editor")
             
@@ -354,3 +342,37 @@ else:
             
             if out_of_stock.empty and low_stock_df.empty:
                 st.success("✅ All stock levels are healthy and above their specific threshold limits!")
+            
+            st.divider()
+            st.subheader("🚚 Process Bulk Restock via File Upload")
+            restock_file = st.file_uploader("Upload Restock Invoice/Excel", type=["csv", "xlsx"], key="restock")
+            if restock_file is not None:
+                r_df = pd.read_csv(restock_file) if restock_file.name.endswith('.csv') else pd.read_excel(restock_file)
+                if 'Size' not in r_df.columns: r_df['Size'] = 'Free Size'
+                
+                for _, r in r_df.iterrows():
+                    mask = (master_df['Item_Name'] == r['Item_Name']) & (master_df['Size'] == r['Size'])
+                    if mask.any():
+                        master_df.loc[mask, 'Stock_Qty'] += r['Stock_Qty']
+                        master_df.loc[mask, 'Days_In_Rack'] = 0
+                    else:
+                        new_row = pd.DataFrame([{
+                            'Category': r.get('Category', 'General'),
+                            'Item_Name': r['Item_Name'],
+                            'Size': r['Size'],
+                            'Stock_Qty': r['Stock_Qty'],
+                            'Price_LKR': r['Price_LKR'],
+                            'Days_In_Rack': 0,
+                            'Min_Limit': 5
+                        }])
+                        master_df = pd.concat([master_df, new_row], ignore_index=True)
+                
+                updated_records = master_df.to_dict(orient="records")
+                st.session_state.master_inventory[user_key] = updated_records
+                
+                stock_db = load_data(STOCK_DB_FILE)
+                stock_db[user_key] = updated_records
+                save_data(stock_db, STOCK_DB_FILE)
+                
+                st.success("🎉 Restock Updated & Saved!")
+                st.rerun()
