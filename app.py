@@ -194,7 +194,6 @@ else:
         m3.metric("🚨 Current Dead Stock Units", f"{dead_units:,}")
         m4.metric("💰 Recoverable Cash", f"LKR {recoverable_val:,}")
         
-        # Monthly Summary Export Option
         summary_csv = master_df.to_csv(index=False).encode('utf-8')
         st.download_button(
             label="📥 Download Monthly Inventory & Performance Summary (CSV)",
@@ -280,12 +279,35 @@ else:
 
     # TAB 3: RESTOCK & ALERTS
     with tab3:
-        st.header("3. Smart Restock & Stock-Out Intelligence")
+        st.header("3. Smart Restock & Customizable Low-Stock Alerts")
         if master_df is not None and not master_df.empty:
+            
+            # --- CUSTOMIZABLE LOW STOCK THRESHOLD ---
+            st.subheader("⚙️ Configure Low-Stock Warning Limit")
+            threshold = st.slider("Select Minimum Stock Threshold for Alerts", min_value=1, max_value=20, value=5)
+            
+            low_stock_df = master_df[(master_df['Stock_Qty'] > 0) & (master_df['Stock_Qty'] <= threshold)]
             out_of_stock = master_df[master_df['Stock_Qty'] == 0]
+            
             if not out_of_stock.empty:
-                st.error("🚨 CRITICAL STOCK-OUT ALERT! The following Sizes are OUT OF STOCK:")
-                st.table(out_of_stock[['Category', 'Item_Name', 'Size', 'Price_LKR']])
+                st.error("🚨 CRITICAL: The following items are completely OUT OF STOCK!")
+                st.table(out_of_stock[['Category', 'Item_Name', 'Size', 'Stock_Qty', 'Price_LKR']])
+                
+                # WhatsApp Alert to Restock Out-of-Stock items
+                out_text = f"🚨 URGENT RESTOCK ALERT for {user['shop_name']}! Items completely sold out. Please check dashboard."
+                encoded_out = urllib.parse.quote(out_text)
+                st.markdown(f"[📲 Send Out-of-Stock Alert via WhatsApp](https://wa.me/{user['phone']}?text={encoded_out})", unsafe_allow_html=True)
+            
+            if not low_stock_df.empty:
+                st.warning(f"⚠️ LOW STOCK WARNING: The following items have dropped to {threshold} units or fewer:")
+                st.table(low_stock_df[['Category', 'Item_Name', 'Size', 'Stock_Qty', 'Price_LKR']])
+                
+                low_text = f"⚠️ LOW STOCK WARNING at {user['shop_name']}! {len(low_stock_df)} items are running low (below {threshold} units). Time to restock!"
+                encoded_low = urllib.parse.quote(low_text)
+                st.markdown(f"[📲 Send Low-Stock Warning via WhatsApp](https://wa.me/{user['phone']}?text={encoded_low})", unsafe_allow_html=True)
+            
+            if out_of_stock.empty and low_stock_df.empty:
+                st.success("✅ All stock levels are healthy and above your threshold limit!")
             
             st.divider()
             st.subheader("🚚 Process Restock")
