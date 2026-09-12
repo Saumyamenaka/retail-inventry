@@ -8,6 +8,7 @@ st.set_page_config(page_title="Retail Inventory Engine - Apparel POS", layout="w
 
 USER_DB_FILE = "users_db.json"
 STOCK_DB_FILE = "stock_db.json"
+SALES_HISTORY_FILE = "sales_history.json"
 
 def load_data(file_path):
     if os.path.exists(file_path):
@@ -160,7 +161,7 @@ else:
     
     col_h1, col_h2 = st.columns([4, 1])
     with col_h1:
-        st.title(f"👕 {user['shop_name']} - Apparel Inventory Intelligence")
+        st.title(f"👕 {user['shop_name']} - Apparel Inventory & Analytics Intelligence")
         st.caption(f"Welcome, **{user['owner_name']}** | Email: {user['email']} | Phone: {user['phone']}")
     with col_h2:
         if st.button("🚪 Logout"):
@@ -203,7 +204,12 @@ else:
         )
         st.divider()
 
-    tab1, tab2, tab3 = st.tabs(["📦 Baseline Stock Setup", "🛒 Daily Sales & Cash Recovery", "🚚 Restock & Limits Editor"])
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📦 Baseline Stock Setup", 
+        "🛒 Daily Sales & Cash Recovery", 
+        "🚚 Restock & Limits Editor",
+        "📈 Sales Analytics & Trends"
+    ])
 
     # TAB 1: MASTER SETUP
     with tab1:
@@ -214,14 +220,12 @@ else:
         if master_file is not None:
             df = pd.read_csv(master_file) if master_file.name.endswith('.csv') else pd.read_excel(master_file)
             
-            # Ensure necessary columns exist
             if 'Barcode' not in df.columns: df['Barcode'] = [f"BC-{1000+i}" for i in range(len(df))]
             if 'Size' not in df.columns: df['Size'] = 'Free Size'
             if 'Category' not in df.columns: df['Category'] = 'General'
             if 'Days_In_Rack' not in df.columns: df['Days_In_Rack'] = 0
             if 'Min_Limit' not in df.columns: df['Min_Limit'] = 5
             
-            # Convert Barcode to string to avoid formatting issues
             df['Barcode'] = df['Barcode'].astype(str)
             
             data_records = df.to_dict(orient="records")
@@ -245,7 +249,7 @@ else:
             st.warning("⚠️ Upload Baseline in Tab 1 first!")
         else:
             sales_date = st.date_input("Select Sales Date for this Upload")
-            st.info("💡 Your daily sales file should ideally match items via `Barcode` or `Item_Name` & `Size`.")
+            st.info("💡 Your daily sales file should include columns like: `Barcode`, `Item_Name`, `Size`, `Sold_Qty`.")
             sales_file = st.file_uploader("Upload Daily Sales File", type=["csv", "xlsx"], key="daily_sales")
             current_df = master_df.copy()
             
@@ -268,18 +272,31 @@ else:
                         sales_df = pd.read_csv(sales_file) if sales_file.name.endswith('.csv') else pd.read_excel(sales_file)
                         if 'Barcode' in sales_df.columns:
                             sales_df['Barcode'] = sales_df['Barcode'].astype(str)
+                        if 'Size' not in sales_df.columns: 
+                            sales_df['Size'] = 'Free Size'
                         
+                        # Enrich sales data with Category and Price from master_df for analytics
+                        enriched_sales = []
                         for _, sale in sales_df.iterrows():
-                            # Match primarily by Barcode if available, else by Item_Name and Size
                             if 'Barcode' in sales_df.columns and 'Barcode' in current_df.columns:
                                 mask = (current_df['Barcode'] == sale['Barcode'])
                             else:
-                                if 'Size' not in sales_df.columns: sales_df['Size'] = 'Free Size'
                                 mask = (current_df['Item_Name'] == sale['Item_Name']) & (current_df['Size'] == sale['Size'])
                                 
                             if mask.any():
+                                match_row = current_df[mask].iloc[0]
                                 current_df.loc[mask, 'Stock_Qty'] -= sale['Sold_Qty']
                                 current_df.loc[current_df['Stock_Qty'] < 0, 'Stock_Qty'] = 0
+                                
+                                enriched_sales.append({
+                                    "Date": date_str,
+                                    "Barcode": str(match_row.get('Barcode', 'N/A')),
+                                    "Category": str(match_row.get('Category', 'General')),
+                                    "Item_Name": str(match_row.get('Item_Name', 'Unknown')),
+                                    "Size": str(sale['Size']),
+                                    "Sold_Qty": int(sale['Sold_Qty']),
+                                    "Revenue": int(sale['Sold_Qty'] * match_row.get('Price_LKR', 0))
+                                })
                         
                         # Update aging (Days_In_Rack)
                         if 'Barcode' in sales_df.columns and 'Barcode' in current_df.columns:
@@ -303,7 +320,14 @@ else:
                         users_data[target_uname]["uploaded_dates"].append(date_str)
                         save_data(users_data, USER_DB_FILE)
                         
-                        st.success(f"✅ Sales for {date_str} Successfully Deducted & Database Updated!")
+                        # Save to sales history for analytics
+                        sales_history = load_data(SALES_HISTORY_FILE)
+                        if user_key not in sales_history:
+                            sales_history[user_key] = []
+                        sales_history[user_key].extend(enriched_sales)
+                        save_data(sales_history, SALES_HISTORY_FILE)
+                        
+                        st.success(f"✅ Sales for {date_str} Successfully Deducted & Analytics Updated!")
                         st.rerun()
 
             dead_stock = current_df[current_df['Days_In_Rack'] > 30].copy()
@@ -331,7 +355,6 @@ else:
                 
             master_df['Barcode'] = master_df['Barcode'].astype(str)
                 
-            # --- GLOBAL LIMIT OPTION ---
             st.subheader("🌐 Global Minimum Limit Control")
             col_g1, col_g2 = st.columns([3, 1])
             with col_g1:
@@ -353,7 +376,6 @@ else:
 
             st.divider()
             
-            # --- LIVE EDITING TABLE ---
             st.subheader("✏️ Live Inventory, Barcode & Limits Editor")
             edited_df = st.data_editor(master_df, num_rows="dynamic", use_container_width=True, key="live_stock_editor")
             
@@ -371,7 +393,6 @@ else:
                 
             st.divider()
             
-            # Alerts based on edited live data
             low_stock_df = edited_df[(edited_df['Stock_Qty'] > 0) & (edited_df['Stock_Qty'] <= edited_df['Min_Limit'])]
             out_of_stock = edited_df[edited_df['Stock_Qty'] == 0]
             
@@ -434,3 +455,52 @@ else:
                 
                 st.success("🎉 Restock Updated & Saved!")
                 st.rerun()
+
+    # TAB 4: SALES ANALYTICS & TRENDS
+    with tab4:
+        st.header("📈 Sales Trend & Analytics Dashboard")
+        sales_history = load_data(SALES_HISTORY_FILE)
+        
+        if user_key not in sales_history or not sales_history[user_key]:
+            st.info("ℹ️ No sales data recorded yet. Upload daily sales files in Tab 2 to generate analytics and visual charts.")
+        else:
+            sales_df = pd.DataFrame(sales_history[user_key])
+            
+            # Top metrics
+            total_sold_units = int(sales_df['Sold_Qty'].sum())
+            total_sales_revenue = int(sales_df['Revenue'].sum())
+            
+            s1, s2 = st.columns(2)
+            s1.metric("🛍️ Total Units Sold", f"{total_sold_units:,}")
+            s2.metric("💵 Total Sales Revenue", f"LKR {total_sales_revenue:,}")
+            
+            st.divider()
+            
+            # 1. Best-Selling Categories
+            st.subheader("👕 Best-Selling Categories (وිකුණුම් කාණ්ඩ අනුව)")
+            cat_df = sales_df.groupby('Category')['Sold_Qty'].sum().reset_index()
+            cat_df = cat_df.sort_values(by='Sold_Qty', ascending=False)
+            st.bar_chart(cat_df.set_index('Category'))
+            
+            st.divider()
+            
+            # 2. Top-Selling Items
+            st.subheader("🔥 Top-Selling Items (වැඩිපුරම අලෙවි වන භාණ්ඩ)")
+            item_df = sales_df.groupby('Item_Name')['Sold_Qty'].sum().reset_index()
+            item_df = item_df.sort_values(by='Sold_Qty', ascending=False).head(10)
+            st.bar_chart(item_df.set_index('Item_Name'))
+            
+            st.divider()
+            
+            # 3. Size Demand Analysis
+            st.subheader("📏 Size Demand Breakdown (ප්‍රමාණ අනුව ඉල්ලුම - S, M, L, XL)")
+            size_df = sales_df.groupby('Size')['Sold_Qty'].sum().reset_index()
+            size_df = size_df.sort_values(by='Sold_Qty', ascending=False)
+            st.bar_chart(size_df.set_index('Size'))
+            
+            st.divider()
+            
+            # 4. Sales Trend over Dates
+            st.subheader("📅 Daily Revenue Trend (දෛනික ආදායම් ප්‍රවණතාවය)")
+            date_df = sales_df.groupby('Date')['Revenue'].sum().reset_index()
+            st.line_chart(date_df.set_index('Date'))
