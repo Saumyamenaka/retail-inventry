@@ -61,7 +61,7 @@ if not st.session_state.authenticated:
                         "email": email,
                         "phone": phone,
                         "password": password,
-                        "uploaded_dates": [] # Track uploaded sales dates
+                        "uploaded_dates": []
                     }
                     save_data(users, USER_DB_FILE)
                     st.success("🎉 Registration Successful! Switch to 'Login' above.")
@@ -185,7 +185,7 @@ else:
         total_val = int((master_df['Stock_Qty'] * master_df['Price_LKR']).sum())
         dead_df = master_df[master_df['Days_In_Rack'] > 30]
         dead_units = int(dead_df['Stock_Qty'].sum())
-        recoverable_val = int((dead_df['Stock_Qty'] * dead_df['Price_LKR'] * 0.8).sum())
+        recoverable_val = int((dead_df['Stock_Qty'] * master_df['Price_LKR'] * 0.8).sum())
         
         st.subheader("📊 Executive Performance Dashboard")
         m1, m2, m3, m4 = st.columns(4)
@@ -203,7 +203,7 @@ else:
         )
         st.divider()
 
-    tab1, tab2, tab3 = st.tabs(["📦 Baseline Stock Setup", "🛒 Daily Sales & Cash Recovery", "🚚 Restock & Live Editor"])
+    tab1, tab2, tab3 = st.tabs(["📦 Baseline Stock Setup", "🛒 Daily Sales & Cash Recovery", "🚚 Restock & Limits Editor"])
 
     # TAB 1: MASTER SETUP
     with tab1:
@@ -297,14 +297,37 @@ else:
                         encoded = urllib.parse.quote(offer_text)
                         st.markdown(f"[📲 Launch WhatsApp Campaign](https://wa.me/?text={encoded})", unsafe_allow_html=True)
 
-    # TAB 3: RESTOCK & LIVE EDITOR
+    # TAB 3: RESTOCK & LIMITS EDITOR
     with tab3:
-        st.header("3. Live Inventory Editor, Alerts & Restock")
+        st.header("3. Low-Stock Limits, Live Editor & Restock")
         if master_df is not None and not master_df.empty:
             if 'Min_Limit' not in master_df.columns:
                 master_df['Min_Limit'] = 5
                 
-            st.subheader("✏️ Live Inventory Editor (Click any cell to edit Stock, Min Limit, or Prices directly)")
+            # --- GLOBAL LIMIT OPTION ---
+            st.subheader("🌐 Global Minimum Limit Control")
+            col_g1, col_g2 = st.columns([3, 1])
+            with col_g1:
+                global_limit_val = st.slider("Set Single Minimum Limit for ALL Items at once", min_value=1, max_value=20, value=5)
+            with col_g2:
+                st.write("")
+                st.write("")
+                if st.button("🚀 Apply to All Items"):
+                    master_df['Min_Limit'] = global_limit_val
+                    updated_records = master_df.to_dict(orient="records")
+                    st.session_state.master_inventory[user_key] = updated_records
+                    
+                    stock_db = load_data(STOCK_DB_FILE)
+                    stock_db[user_key] = updated_records
+                    save_data(stock_db, STOCK_DB_FILE)
+                    
+                    st.success(f"✅ Global limit ({global_limit_val}) applied to all items!")
+                    st.rerun()
+
+            st.divider()
+            
+            # --- LIVE EDITING TABLE ---
+            st.subheader("✏️ Live Inventory & Individual Limits Editor")
             edited_df = st.data_editor(master_df, num_rows="dynamic", use_container_width=True, key="live_stock_editor")
             
             if st.button("💾 Save Live Changes"):
@@ -333,18 +356,18 @@ else:
                 st.markdown(f"[📲 Send Out-of-Stock Alert via WhatsApp](https://wa.me/{user['phone']}?text={encoded_out})", unsafe_allow_html=True)
             
             if not low_stock_df.empty:
-                st.warning("⚠️ LOW STOCK WARNING: The following items have dropped to or below their customized Minimum Limit:")
+                st.warning("⚠️ LOW STOCK WARNING: The following items have dropped to or below their Minimum Limit:")
                 st.table(low_stock_df[['Category', 'Item_Name', 'Size', 'Stock_Qty', 'Min_Limit', 'Price_LKR']])
                 
-                low_text = f"⚠️ LOW STOCK WARNING at {user['shop_name']}! {len(low_stock_df)} items have hit their customized minimum limits. Time to restock!"
+                low_text = f"⚠️ LOW STOCK WARNING at {user['shop_name']}! {len(low_stock_df)} items have hit their minimum limits. Time to restock!"
                 encoded_low = urllib.parse.quote(low_text)
                 st.markdown(f"[📲 Send Low-Stock Warning via WhatsApp](https://wa.me/{user['phone']}?text={encoded_low})", unsafe_allow_html=True)
             
             if out_of_stock.empty and low_stock_df.empty:
-                st.success("✅ All stock levels are healthy and above their specific threshold limits!")
+                st.success("✅ All stock levels are healthy and above their threshold limits!")
             
             st.divider()
-            st.subheader("🚚 Process Bulk Restock via File Upload")
+            st.subheader("🚚 Process Restock via File Upload")
             restock_file = st.file_uploader("Upload Restock Invoice/Excel", type=["csv", "xlsx"], key="restock")
             if restock_file is not None:
                 r_df = pd.read_csv(restock_file) if restock_file.name.endswith('.csv') else pd.read_excel(restock_file)
@@ -363,7 +386,7 @@ else:
                             'Stock_Qty': r['Stock_Qty'],
                             'Price_LKR': r['Price_LKR'],
                             'Days_In_Rack': 0,
-                            'Min_Limit': 5
+                            'Min_Limit': r.get('Min_Limit', 5)
                         }])
                         master_df = pd.concat([master_df, new_row], ignore_index=True)
                 
