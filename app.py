@@ -60,7 +60,8 @@ if not st.session_state.authenticated:
                         "owner_name": owner_name,
                         "email": email,
                         "phone": phone,
-                        "password": password
+                        "password": password,
+                        "uploaded_dates": [] # Track uploaded sales dates
                     }
                     save_data(users, USER_DB_FILE)
                     st.success("🎉 Registration Successful! Switch to 'Login' above.")
@@ -179,7 +180,6 @@ else:
         else:
             master_df = None
 
-    # --- TOP EXECUTIVE SUMMARY DASHBOARD ---
     if master_df is not None and not master_df.empty:
         total_units = int(master_df['Stock_Qty'].sum())
         total_val = int((master_df['Stock_Qty'] * master_df['Price_LKR']).sum())
@@ -235,33 +235,54 @@ else:
         if master_df is None or master_df.empty:
             st.warning("⚠️ Upload Baseline in Tab 1 first!")
         else:
+            sales_date = st.date_input("Select Sales Date for this Upload")
             sales_file = st.file_uploader("Upload Daily Sales File", type=["csv", "xlsx"], key="daily_sales")
             current_df = master_df.copy()
             
             if sales_file is not None:
-                sales_df = pd.read_csv(sales_file) if sales_file.name.endswith('.csv') else pd.read_excel(sales_file)
-                if 'Size' not in sales_df.columns: sales_df['Size'] = 'Free Size'
+                users_data = load_data(USER_DB_FILE)
+                # Find username key
+                target_uname = None
+                for un, ud in users_data.items():
+                    if ud.get("email") == user_key:
+                        target_uname = un
+                        break
                 
-                for _, sale in sales_df.iterrows():
-                    mask = (current_df['Item_Name'] == sale['Item_Name']) & (current_df['Size'] == sale['Size'])
-                    if mask.any():
-                        current_df.loc[mask, 'Stock_Qty'] -= sale['Sold_Qty']
-                        current_df.loc[current_df['Stock_Qty'] < 0, 'Stock_Qty'] = 0
-                
-                sold_skus = list(zip(sales_df['Item_Name'], sales_df['Size']))
-                for idx, row in current_df.iterrows():
-                    if (row['Item_Name'], row['Size']) not in sold_skus:
-                        current_df.loc[idx, 'Days_In_Rack'] += 1
+                if target_uname:
+                    if "uploaded_dates" not in users_data[target_uname]:
+                        users_data[target_uname]["uploaded_dates"] = []
+                    
+                    date_str = str(sales_date)
+                    if date_str in users_data[target_uname]["uploaded_dates"]:
+                        st.error(f"🛑 DUPLICATE UPLOAD BLOCKED! Sales for date **{date_str}** have already been processed and deducted!")
+                    else:
+                        sales_df = pd.read_csv(sales_file) if sales_file.name.endswith('.csv') else pd.read_excel(sales_file)
+                        if 'Size' not in sales_df.columns: sales_df['Size'] = 'Free Size'
                         
-                updated_records = current_df.to_dict(orient="records")
-                st.session_state.master_inventory[user_key] = updated_records
-                
-                stock_db = load_data(STOCK_DB_FILE)
-                stock_db[user_key] = updated_records
-                save_data(stock_db, STOCK_DB_FILE)
-                
-                st.success("✅ Stock Deducted & Database Updated!")
-                st.rerun()
+                        for _, sale in sales_df.iterrows():
+                            mask = (current_df['Item_Name'] == sale['Item_Name']) & (current_df['Size'] == sale['Size'])
+                            if mask.any():
+                                current_df.loc[mask, 'Stock_Qty'] -= sale['Sold_Qty']
+                                current_df.loc[current_df['Stock_Qty'] < 0, 'Stock_Qty'] = 0
+                        
+                        sold_skus = list(zip(sales_df['Item_Name'], sales_df['Size']))
+                        for idx, row in current_df.iterrows():
+                            if (row['Item_Name'], row['Size']) not in sold_skus:
+                                current_df.loc[idx, 'Days_In_Rack'] += 1
+                                
+                        updated_records = current_df.to_dict(orient="records")
+                        st.session_state.master_inventory[user_key] = updated_records
+                        
+                        stock_db = load_data(STOCK_DB_FILE)
+                        stock_db[user_key] = updated_records
+                        save_data(stock_db, STOCK_DB_FILE)
+                        
+                        # Save uploaded date
+                        users_data[target_uname]["uploaded_dates"].append(date_str)
+                        save_data(users_data, USER_DB_FILE)
+                        
+                        st.success(f"✅ Sales for {date_str} Successfully Deducted & Database Updated!")
+                        st.rerun()
 
             dead_stock = current_df[current_df['Days_In_Rack'] > 30].copy()
             dead_stock['Discount_Price'] = (dead_stock['Price_LKR'] * 0.8).astype(int)
@@ -281,8 +302,6 @@ else:
     with tab3:
         st.header("3. Smart Restock & Customizable Low-Stock Alerts")
         if master_df is not None and not master_df.empty:
-            
-            # --- CUSTOMIZABLE LOW STOCK THRESHOLD ---
             st.subheader("⚙️ Configure Low-Stock Warning Limit")
             threshold = st.slider("Select Minimum Stock Threshold for Alerts", min_value=1, max_value=20, value=5)
             
@@ -293,7 +312,6 @@ else:
                 st.error("🚨 CRITICAL: The following items are completely OUT OF STOCK!")
                 st.table(out_of_stock[['Category', 'Item_Name', 'Size', 'Stock_Qty', 'Price_LKR']])
                 
-                # WhatsApp Alert to Restock Out-of-Stock items
                 out_text = f"🚨 URGENT RESTOCK ALERT for {user['shop_name']}! Items completely sold out. Please check dashboard."
                 encoded_out = urllib.parse.quote(out_text)
                 st.markdown(f"[📲 Send Out-of-Stock Alert via WhatsApp](https://wa.me/{user['phone']}?text={encoded_out})", unsafe_allow_html=True)
