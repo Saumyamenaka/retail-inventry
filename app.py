@@ -61,7 +61,7 @@ if not st.session_state.authenticated:
                         "email": email,
                         "phone": phone,
                         "password": password,
-                        "uploaded_dates": [] # Track uploaded sales dates
+                        "uploaded_dates": []
                     }
                     save_data(users, USER_DB_FILE)
                     st.success("🎉 Registration Successful! Switch to 'Login' above.")
@@ -214,6 +214,7 @@ else:
             if 'Size' not in df.columns: df['Size'] = 'Free Size'
             if 'Category' not in df.columns: df['Category'] = 'General'
             if 'Days_In_Rack' not in df.columns: df['Days_In_Rack'] = 0
+            if 'Min_Limit' not in df.columns: df['Min_Limit'] = 5 # Default limit per item
             
             data_records = df.to_dict(orient="records")
             st.session_state.master_inventory[user_key] = data_records
@@ -226,7 +227,7 @@ else:
             st.dataframe(df, use_container_width=True)
             st.rerun()
         elif master_df is not None:
-            st.info("📊 Current Active Baseline:")
+            st.info("📊 Current Active Baseline (Item-specific limits included):")
             st.dataframe(master_df, use_container_width=True)
 
     # TAB 2: DAILY SALES & DEAD STOCK
@@ -241,7 +242,6 @@ else:
             
             if sales_file is not None:
                 users_data = load_data(USER_DB_FILE)
-                # Find username key
                 target_uname = None
                 for un, ud in users_data.items():
                     if ud.get("email") == user_key:
@@ -277,7 +277,6 @@ else:
                         stock_db[user_key] = updated_records
                         save_data(stock_db, STOCK_DB_FILE)
                         
-                        # Save uploaded date
                         users_data[target_uname]["uploaded_dates"].append(date_str)
                         save_data(users_data, USER_DB_FILE)
                         
@@ -290,22 +289,37 @@ else:
             
             st.divider()
             st.subheader("🎯 Size-Targeted WhatsApp Clearance Offers")
-            for idx, row in dead_stock.iterrows():
-                if row['Stock_Qty'] > 0:
-                    with st.expander(f"⚠️ {row['Item_Name']} - [Size: {row['Size']}] ({row['Stock_Qty']} units | Stuck: {row['Days_In_Rack']} days)"):
-                        st.write(f"**Original Price:** LKR {row['Price_LKR']:,} | **Offer Price:** LKR {row['Discount_Price']:,}")
-                        offer_text = f"🌸 CLEARANCE OFFER! {user['shop_name']} offers {row['Item_Name']} (Size: {row['Size']}) for LKR {row['Discount_Price']:,}! Reply YES to reserve."
-                        encoded = urllib.parse.quote(offer_text)
-                        st.markdown(f"[📲 Launch WhatsApp Campaign](https://wa.me/?text={encoded})", unsafe_allow_html=True)
-
-    # TAB 3: RESTOCK & ALERTS
-    with tab3:
-        st.header("3. Smart Restock & Customizable Low-Stock Alerts")
-        if master_df is not None and not master_df.empty:
-            st.subheader("⚙️ Configure Low-Stock Warning Limit")
-            threshold = st.slider("Select Minimum Stock Threshold for Alerts", min_value=1, max_value=20, value=5)
             
-            low_stock_df = master_df[(master_df['Stock_Qty'] > 0) & (master_df['Stock_Qty'] <= threshold)]
+            if not dead_stock.empty:
+                # --- BULK SELECT ALL OPTION FOR DEAD STOCK ---
+                select_all_dead = st.checkbox("☑️ Select All Dead Stock Items for Bulk WhatsApp Broadcast")
+                
+                bulk_items_text = f"🌸 SPECIAL CLEARANCE SALE at {user['shop_name']}! Clear out our old inventory at discounted prices. Check items below:\n"
+                
+                for idx, row in dead_stock.iterrows():
+                    if row['Stock_Qty'] > 0:
+                        with st.expander(f"⚠️ {row['Item_Name']} - [Size: {row['Size']}] ({row['Stock_Qty']} units | Stuck: {row['Days_In_Rack']} days)"):
+                            st.write(f"**Original Price:** LKR {row['Price_LKR']:,} | **Offer Price:** LKR {row['Discount_Price']:,}")
+                            offer_text = f"🌸 CLEARANCE OFFER! {user['shop_name']} offers {row['Item_Name']} (Size: {row['Size']}) for LKR {row['Discount_Price']:,}! Reply YES to reserve."
+                            encoded = urllib.parse.quote(offer_text)
+                            st.markdown(f"[📲 Launch Individual WhatsApp Offer](https://wa.me/?text={encoded})", unsafe_allow_html=True)
+                        
+                        if select_all_dead:
+                            bulk_items_text += f"- {row['Item_Name']} ({row['Size']}) Now LKR {row['Discount_Price']:,}\n"
+                
+                if select_all_dead:
+                    encoded_bulk = urllib.parse.quote(bulk_items_text)
+                    st.markdown(f"### 🚀 [Click Here to Send Bulk WhatsApp Broadcast for All Selected Items](https://wa.me/?text={encoded_bulk})")
+
+    # TAB 3: RESTOCK & ITEM-SPECIFIC ALERTS
+    with tab3:
+        st.header("3. Smart Restock & Item-Specific Low-Stock Alerts")
+        if master_df is not None and not master_df.empty:
+            if 'Min_Limit' not in master_df.columns:
+                master_df['Min_Limit'] = 5
+                
+            # Filter based on each item's individual Min_Limit column
+            low_stock_df = master_df[(master_df['Stock_Qty'] > 0) & (master_df['Stock_Qty'] <= master_df['Min_Limit'])]
             out_of_stock = master_df[master_df['Stock_Qty'] == 0]
             
             if not out_of_stock.empty:
@@ -317,15 +331,15 @@ else:
                 st.markdown(f"[📲 Send Out-of-Stock Alert via WhatsApp](https://wa.me/{user['phone']}?text={encoded_out})", unsafe_allow_html=True)
             
             if not low_stock_df.empty:
-                st.warning(f"⚠️ LOW STOCK WARNING: The following items have dropped to {threshold} units or fewer:")
-                st.table(low_stock_df[['Category', 'Item_Name', 'Size', 'Stock_Qty', 'Price_LKR']])
+                st.warning("⚠️ LOW STOCK WARNING: The following items have dropped to or below their customized Minimum Limit:")
+                st.table(low_stock_df[['Category', 'Item_Name', 'Size', 'Stock_Qty', 'Min_Limit', 'Price_LKR']])
                 
-                low_text = f"⚠️ LOW STOCK WARNING at {user['shop_name']}! {len(low_stock_df)} items are running low (below {threshold} units). Time to restock!"
+                low_text = f"⚠️ LOW STOCK WARNING at {user['shop_name']}! {len(low_stock_df)} items have hit their customized minimum limits. Time to restock!"
                 encoded_low = urllib.parse.quote(low_text)
                 st.markdown(f"[📲 Send Low-Stock Warning via WhatsApp](https://wa.me/{user['phone']}?text={encoded_low})", unsafe_allow_html=True)
             
             if out_of_stock.empty and low_stock_df.empty:
-                st.success("✅ All stock levels are healthy and above your threshold limit!")
+                st.success("✅ All stock levels are healthy and above their specific threshold limits!")
             
             st.divider()
             st.subheader("🚚 Process Restock")
@@ -333,6 +347,7 @@ else:
             if restock_file is not None:
                 r_df = pd.read_csv(restock_file) if restock_file.name.endswith('.csv') else pd.read_excel(restock_file)
                 if 'Size' not in r_df.columns: r_df['Size'] = 'Free Size'
+                if 'Min_Limit' not in r_df.columns: r_df['Min_Limit'] = 5
                 
                 for _, r in r_df.iterrows():
                     mask = (master_df['Item_Name'] == r['Item_Name']) & (master_df['Size'] == r['Size'])
@@ -346,7 +361,8 @@ else:
                             'Size': r['Size'],
                             'Stock_Qty': r['Stock_Qty'],
                             'Price_LKR': r['Price_LKR'],
-                            'Days_In_Rack': 0
+                            'Days_In_Rack': 0,
+                            'Min_Limit': r.get('Min_Limit', 5)
                         }])
                         master_df = pd.concat([master_df, new_row], ignore_index=True)
                 
