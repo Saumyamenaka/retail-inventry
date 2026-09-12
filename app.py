@@ -4,7 +4,7 @@ import urllib.parse
 import json
 import os
 
-st.set_page_config(page_title="Retail Inventory Engine", layout="wide")
+st.set_page_config(page_title="Retail Inventory Engine - Apparel POS", layout="wide")
 
 USER_DB_FILE = "users_db.json"
 STOCK_DB_FILE = "stock_db.json"
@@ -111,7 +111,7 @@ elif st.session_state.is_admin:
     st.title("🛡️ System Admin Master Control")
     col_a1, col_a2 = st.columns([4, 1])
     with col_a1:
-        st.caption("Overview of all registered shop owners and active client stores.")
+        st.caption("Overview of all registered apparel shop owners and active stores.")
     with col_a2:
         if st.button("🚪 Logout Admin"):
             st.session_state.authenticated = False
@@ -139,7 +139,7 @@ elif st.session_state.is_admin:
                 "Owner Name": udata.get("owner_name"),
                 "Email": u_email,
                 "Phone": udata.get("phone"),
-                "Total Stock Items": total_items
+                "Total Stock Units": total_items
             })
             
         admin_df = pd.DataFrame(user_list)
@@ -160,7 +160,7 @@ else:
     
     col_h1, col_h2 = st.columns([4, 1])
     with col_h1:
-        st.title(f"🛍️ {user['shop_name']} - Inventory Intelligence")
+        st.title(f"👕 {user['shop_name']} - Apparel Inventory Intelligence")
         st.caption(f"Welcome, **{user['owner_name']}** | Email: {user['email']} | Phone: {user['phone']}")
     with col_h2:
         if st.button("🚪 Logout"):
@@ -207,14 +207,22 @@ else:
 
     # TAB 1: MASTER SETUP
     with tab1:
-        st.header("1. Upload Initial Master Stock Count")
+        st.header("1. Upload Initial Master Stock Count (with Barcodes)")
+        st.info("💡 Tip: Your Excel/CSV file should include columns like: `Barcode`, `Category`, `Item_Name`, `Size`, `Stock_Qty`, `Price_LKR`")
+        
         master_file = st.file_uploader("Upload Initial Inventory (Excel/CSV)", type=["csv", "xlsx"])
         if master_file is not None:
             df = pd.read_csv(master_file) if master_file.name.endswith('.csv') else pd.read_excel(master_file)
+            
+            # Ensure necessary columns exist
+            if 'Barcode' not in df.columns: df['Barcode'] = [f"BC-{1000+i}" for i in range(len(df))]
             if 'Size' not in df.columns: df['Size'] = 'Free Size'
             if 'Category' not in df.columns: df['Category'] = 'General'
             if 'Days_In_Rack' not in df.columns: df['Days_In_Rack'] = 0
             if 'Min_Limit' not in df.columns: df['Min_Limit'] = 5
+            
+            # Convert Barcode to string to avoid formatting issues
+            df['Barcode'] = df['Barcode'].astype(str)
             
             data_records = df.to_dict(orient="records")
             st.session_state.master_inventory[user_key] = data_records
@@ -223,7 +231,7 @@ else:
             stock_db[user_key] = data_records
             save_data(stock_db, STOCK_DB_FILE)
             
-            st.success("✅ Baseline Successfully Saved!")
+            st.success("✅ Baseline with Barcodes Successfully Saved!")
             st.dataframe(df, use_container_width=True)
             st.rerun()
         elif master_df is not None:
@@ -232,11 +240,12 @@ else:
 
     # TAB 2: DAILY SALES & DEAD STOCK
     with tab2:
-        st.header("2. Daily Sales Deductor & Intelligence")
+        st.header("2. Daily Sales Deductor & Intelligence (Barcode-based)")
         if master_df is None or master_df.empty:
             st.warning("⚠️ Upload Baseline in Tab 1 first!")
         else:
             sales_date = st.date_input("Select Sales Date for this Upload")
+            st.info("💡 Your daily sales file should ideally match items via `Barcode` or `Item_Name` & `Size`.")
             sales_file = st.file_uploader("Upload Daily Sales File", type=["csv", "xlsx"], key="daily_sales")
             current_df = master_df.copy()
             
@@ -257,18 +266,32 @@ else:
                         st.error(f"🛑 DUPLICATE UPLOAD BLOCKED! Sales for date **{date_str}** have already been processed and deducted!")
                     else:
                         sales_df = pd.read_csv(sales_file) if sales_file.name.endswith('.csv') else pd.read_excel(sales_file)
-                        if 'Size' not in sales_df.columns: sales_df['Size'] = 'Free Size'
+                        if 'Barcode' in sales_df.columns:
+                            sales_df['Barcode'] = sales_df['Barcode'].astype(str)
                         
                         for _, sale in sales_df.iterrows():
-                            mask = (current_df['Item_Name'] == sale['Item_Name']) & (current_df['Size'] == sale['Size'])
+                            # Match primarily by Barcode if available, else by Item_Name and Size
+                            if 'Barcode' in sales_df.columns and 'Barcode' in current_df.columns:
+                                mask = (current_df['Barcode'] == sale['Barcode'])
+                            else:
+                                if 'Size' not in sales_df.columns: sales_df['Size'] = 'Free Size'
+                                mask = (current_df['Item_Name'] == sale['Item_Name']) & (current_df['Size'] == sale['Size'])
+                                
                             if mask.any():
                                 current_df.loc[mask, 'Stock_Qty'] -= sale['Sold_Qty']
                                 current_df.loc[current_df['Stock_Qty'] < 0, 'Stock_Qty'] = 0
                         
-                        sold_skus = list(zip(sales_df['Item_Name'], sales_df['Size']))
-                        for idx, row in current_df.iterrows():
-                            if (row['Item_Name'], row['Size']) not in sold_skus:
-                                current_df.loc[idx, 'Days_In_Rack'] += 1
+                        # Update aging (Days_In_Rack)
+                        if 'Barcode' in sales_df.columns and 'Barcode' in current_df.columns:
+                            sold_barcodes = list(sales_df['Barcode'])
+                            for idx, row in current_df.iterrows():
+                                if row['Barcode'] not in sold_barcodes:
+                                    current_df.loc[idx, 'Days_In_Rack'] += 1
+                        else:
+                            sold_skus = list(zip(sales_df['Item_Name'], sales_df['Size']))
+                            for idx, row in current_df.iterrows():
+                                if (row['Item_Name'], row['Size']) not in sold_skus:
+                                    current_df.loc[idx, 'Days_In_Rack'] += 1
                                 
                         updated_records = current_df.to_dict(orient="records")
                         st.session_state.master_inventory[user_key] = updated_records
@@ -288,21 +311,25 @@ else:
             dead_stock['Recoverable_Cash'] = dead_stock['Discount_Price'] * dead_stock['Stock_Qty']
             
             st.divider()
-            st.subheader("🎯 Size-Targeted WhatsApp Clearance Offers")
+            st.subheader("🎯 Size & Barcode Targeted WhatsApp Clearance Offers")
             for idx, row in dead_stock.iterrows():
                 if row['Stock_Qty'] > 0:
-                    with st.expander(f"⚠️ {row['Item_Name']} - [Size: {row['Size']}] ({row['Stock_Qty']} units | Stuck: {row['Days_In_Rack']} days)"):
+                    with st.expander(f"⚠️ [{row.get('Barcode', 'N/A')}] {row['Item_Name']} - Size: {row['Size']} ({row['Stock_Qty']} units | Stuck: {row['Days_In_Rack']} days)"):
                         st.write(f"**Original Price:** LKR {row['Price_LKR']:,} | **Offer Price:** LKR {row['Discount_Price']:,}")
-                        offer_text = f"🌸 CLEARANCE OFFER! {user['shop_name']} offers {row['Item_Name']} (Size: {row['Size']}) for LKR {row['Discount_Price']:,}! Reply YES to reserve."
+                        offer_text = f"🌸 CLEARANCE OFFER! {user['shop_name']} offers {row['Item_Name']} (Size: {row['Size']}, Code: {row.get('Barcode', '')}) for LKR {row['Discount_Price']:,}! Reply YES to reserve."
                         encoded = urllib.parse.quote(offer_text)
                         st.markdown(f"[📲 Launch WhatsApp Campaign](https://wa.me/?text={encoded})", unsafe_allow_html=True)
 
     # TAB 3: RESTOCK & LIMITS EDITOR
     with tab3:
-        st.header("3. Low-Stock Limits, Live Editor & Restock")
+        st.header("3. Low-Stock Limits, Live Barcode/Stock Editor & Restock")
         if master_df is not None and not master_df.empty:
             if 'Min_Limit' not in master_df.columns:
                 master_df['Min_Limit'] = 5
+            if 'Barcode' not in master_df.columns:
+                master_df['Barcode'] = [f"BC-{1000+i}" for i in range(len(master_df))]
+                
+            master_df['Barcode'] = master_df['Barcode'].astype(str)
                 
             # --- GLOBAL LIMIT OPTION ---
             st.subheader("🌐 Global Minimum Limit Control")
@@ -327,10 +354,11 @@ else:
             st.divider()
             
             # --- LIVE EDITING TABLE ---
-            st.subheader("✏️ Live Inventory & Individual Limits Editor")
+            st.subheader("✏️ Live Inventory, Barcode & Limits Editor")
             edited_df = st.data_editor(master_df, num_rows="dynamic", use_container_width=True, key="live_stock_editor")
             
             if st.button("💾 Save Live Changes"):
+                edited_df['Barcode'] = edited_df['Barcode'].astype(str)
                 updated_records = edited_df.to_dict(orient="records")
                 st.session_state.master_inventory[user_key] = updated_records
                 
@@ -349,7 +377,7 @@ else:
             
             if not out_of_stock.empty:
                 st.error("🚨 CRITICAL: The following items are completely OUT OF STOCK!")
-                st.table(out_of_stock[['Category', 'Item_Name', 'Size', 'Stock_Qty', 'Price_LKR']])
+                st.table(out_of_stock[['Barcode', 'Category', 'Item_Name', 'Size', 'Stock_Qty', 'Price_LKR']])
                 
                 out_text = f"🚨 URGENT RESTOCK ALERT for {user['shop_name']}! Items completely sold out. Please check dashboard."
                 encoded_out = urllib.parse.quote(out_text)
@@ -357,7 +385,7 @@ else:
             
             if not low_stock_df.empty:
                 st.warning("⚠️ LOW STOCK WARNING: The following items have dropped to or below their Minimum Limit:")
-                st.table(low_stock_df[['Category', 'Item_Name', 'Size', 'Stock_Qty', 'Min_Limit', 'Price_LKR']])
+                st.table(low_stock_df[['Barcode', 'Category', 'Item_Name', 'Size', 'Stock_Qty', 'Min_Limit', 'Price_LKR']])
                 
                 low_text = f"⚠️ LOW STOCK WARNING at {user['shop_name']}! {len(low_stock_df)} items have hit their minimum limits. Time to restock!"
                 encoded_low = urllib.parse.quote(low_text)
@@ -371,15 +399,21 @@ else:
             restock_file = st.file_uploader("Upload Restock Invoice/Excel", type=["csv", "xlsx"], key="restock")
             if restock_file is not None:
                 r_df = pd.read_csv(restock_file) if restock_file.name.endswith('.csv') else pd.read_excel(restock_file)
+                if 'Barcode' in r_df.columns: r_df['Barcode'] = r_df['Barcode'].astype(str)
                 if 'Size' not in r_df.columns: r_df['Size'] = 'Free Size'
                 
                 for _, r in r_df.iterrows():
-                    mask = (master_df['Item_Name'] == r['Item_Name']) & (master_df['Size'] == r['Size'])
+                    if 'Barcode' in r_df.columns and 'Barcode' in master_df.columns:
+                        mask = (master_df['Barcode'] == r['Barcode'])
+                    else:
+                        mask = (master_df['Item_Name'] == r['Item_Name']) & (master_df['Size'] == r['Size'])
+                        
                     if mask.any():
                         master_df.loc[mask, 'Stock_Qty'] += r['Stock_Qty']
                         master_df.loc[mask, 'Days_In_Rack'] = 0
                     else:
                         new_row = pd.DataFrame([{
+                            'Barcode': r.get('Barcode', f"BC-{len(master_df)+1000}"),
                             'Category': r.get('Category', 'General'),
                             'Item_Name': r['Item_Name'],
                             'Size': r['Size'],
@@ -390,6 +424,7 @@ else:
                         }])
                         master_df = pd.concat([master_df, new_row], ignore_index=True)
                 
+                master_df['Barcode'] = master_df['Barcode'].astype(str)
                 updated_records = master_df.to_dict(orient="records")
                 st.session_state.master_inventory[user_key] = updated_records
                 
