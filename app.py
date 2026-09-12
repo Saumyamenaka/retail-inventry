@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import urllib.parse
@@ -12,8 +11,11 @@ STOCK_DB_FILE = "stock_db.json"
 
 def load_data(file_path):
     if os.path.exists(file_path):
-        with open(file_path, "r") as f:
-            return json.load(f)
+        try:
+            with open(file_path, "r") as f:
+                return json.load(f)
+        except:
+            return {}
     return {}
 
 def save_data(data, file_path):
@@ -26,6 +28,8 @@ if "user_info" not in st.session_state:
     st.session_state.user_info = None
 if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
+if "master_inventory" not in st.session_state:
+    st.session_state.master_inventory = {}
 
 # ----------------- AUTHENTICATION SYSTEM -----------------
 if not st.session_state.authenticated:
@@ -73,6 +77,13 @@ if not st.session_state.authenticated:
                     st.session_state.authenticated = True
                     st.session_state.user_info = users[login_user]
                     st.session_state.is_admin = False
+                    
+                    # Load existing stock to session state
+                    stock_db = load_data(STOCK_DB_FILE)
+                    u_email = users[login_user]['email']
+                    if u_email in stock_db:
+                        st.session_state.master_inventory[u_email] = stock_db[u_email]
+                        
                     st.success("✅ Login Successful!")
                     st.rerun()
                 else:
@@ -86,7 +97,6 @@ if not st.session_state.authenticated:
             submit_admin = st.form_submit_button("🔓 Access Master Dashboard")
             
             if submit_admin:
-                # Default Admin Credentials
                 if admin_user == "admin" and admin_pass == "admin123":
                     st.session_state.authenticated = True
                     st.session_state.is_admin = True
@@ -135,7 +145,6 @@ elif st.session_state.is_admin:
         admin_df = pd.DataFrame(user_list)
         st.dataframe(admin_df, use_container_width=True)
         
-        # Download Users Data Option
         csv_data = admin_df.to_csv(index=False).encode('utf-8')
         st.download_button(
             label="📥 Export Registered Owners (CSV)",
@@ -147,6 +156,8 @@ elif st.session_state.is_admin:
 # ----------------- NORMAL SHOP DASHBOARD -----------------
 else:
     user = st.session_state.user_info
+    user_key = user['email']
+    
     col_h1, col_h2 = st.columns([4, 1])
     with col_h1:
         st.title(f"🛍️ {user['shop_name']} - Inventory Intelligence")
@@ -159,9 +170,16 @@ else:
             
     st.divider()
 
-    stock_db = load_data(STOCK_DB_FILE)
-    user_key = user['email']
-    master_df = pd.DataFrame(stock_db[user_key]) if user_key in stock_db else None
+    # Get active master stock from Session State first, then fallback to DB
+    if user_key in st.session_state.master_inventory:
+        master_df = pd.DataFrame(st.session_state.master_inventory[user_key])
+    else:
+        stock_db = load_data(STOCK_DB_FILE)
+        if user_key in stock_db:
+            st.session_state.master_inventory[user_key] = stock_db[user_key]
+            master_df = pd.DataFrame(stock_db[user_key])
+        else:
+            master_df = None
 
     tab1, tab2, tab3 = st.tabs(["📦 Baseline Stock Setup", "🛒 Daily Sales & Cash Recovery", "🚚 Restock & Alerts"])
 
@@ -173,23 +191,31 @@ else:
             df = pd.read_csv(master_file) if master_file.name.endswith('.csv') else pd.read_excel(master_file)
             if 'Size' not in df.columns: df['Size'] = 'Free Size'
             if 'Category' not in df.columns: df['Category'] = 'General'
+            if 'Days_In_Rack' not in df.columns: df['Days_In_Rack'] = 0
             
-            stock_db[user_key] = df.to_dict(orient="records")
+            data_records = df.to_dict(orient="records")
+            st.session_state.master_inventory[user_key] = data_records
+            
+            stock_db = load_data(STOCK_DB_FILE)
+            stock_db[user_key] = data_records
             save_data(stock_db, STOCK_DB_FILE)
+            
             st.success("✅ Baseline Successfully Saved!")
             st.dataframe(df, use_container_width=True)
+            st.rerun()
         elif master_df is not None:
-            st.info("📊 Current Baseline:")
+            st.info("📊 Current Active Baseline:")
             st.dataframe(master_df, use_container_width=True)
 
     # TAB 2: DAILY SALES & DEAD STOCK
     with tab2:
         st.header("2. Daily Sales Deductor & Intelligence")
-        if master_df is None:
+        if master_df is None or master_df.empty:
             st.warning("⚠️ Upload Baseline in Tab 1 first!")
         else:
             sales_file = st.file_uploader("Upload Daily Sales File", type=["csv", "xlsx"], key="daily_sales")
             current_df = master_df.copy()
+            
             if sales_file is not None:
                 sales_df = pd.read_csv(sales_file) if sales_file.name.endswith('.csv') else pd.read_excel(sales_file)
                 if 'Size' not in sales_df.columns: sales_df['Size'] = 'Free Size'
@@ -205,8 +231,13 @@ else:
                     if (row['Item_Name'], row['Size']) not in sold_skus:
                         current_df.loc[idx, 'Days_In_Rack'] += 1
                         
-                stock_db[user_key] = current_df.to_dict(orient="records")
+                updated_records = current_df.to_dict(orient="records")
+                st.session_state.master_inventory[user_key] = updated_records
+                
+                stock_db = load_data(STOCK_DB_FILE)
+                stock_db[user_key] = updated_records
                 save_data(stock_db, STOCK_DB_FILE)
+                
                 st.success("✅ Stock Deducted & Database Updated!")
 
             dead_stock = current_df[current_df['Days_In_Rack'] > 30].copy()
@@ -232,7 +263,7 @@ else:
     # TAB 3: RESTOCK & ALERTS
     with tab3:
         st.header("3. Smart Restock & Stock-Out Intelligence")
-        if master_df is not None:
+        if master_df is not None and not master_df.empty:
             out_of_stock = master_df[master_df['Stock_Qty'] == 0]
             if not out_of_stock.empty:
                 st.error("🚨 CRITICAL STOCK-OUT ALERT! The following Sizes are OUT OF STOCK:")
@@ -261,6 +292,11 @@ else:
                         }])
                         master_df = pd.concat([master_df, new_row], ignore_index=True)
                 
-                stock_db[user_key] = master_df.to_dict(orient="records")
+                updated_records = master_df.to_dict(orient="records")
+                st.session_state.master_inventory[user_key] = updated_records
+                
+                stock_db = load_data(STOCK_DB_FILE)
+                stock_db[user_key] = updated_records
                 save_data(stock_db, STOCK_DB_FILE)
+                
                 st.success("🎉 Restock Updated & Saved!")
